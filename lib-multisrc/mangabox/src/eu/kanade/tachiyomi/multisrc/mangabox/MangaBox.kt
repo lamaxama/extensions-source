@@ -28,7 +28,6 @@ import org.jsoup.nodes.Element
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import java.util.regex.Pattern
 
 abstract class MangaBox(
     override val name: String,
@@ -325,13 +324,13 @@ abstract class MangaBox(
         return super.pageListRequest(chapter)
     }
 
-    private fun extractArray(scriptContent: String, arrayName: String): List<String> {
-        val pattern = Pattern.compile("$arrayName\\s*=\\s*\\[([^]]+)]")
-        val matcher = pattern.matcher(scriptContent)
-        val arrayValues = mutableListOf<String>()
+    private fun extractArray(scriptContent: String?, regex: Regex): List<String> {
+        if (scriptContent == null) {
+            return emptyList()
+        }
 
-        if (matcher.find()) {
-            val arrayContent = matcher.group(1)
+        val arrayValues = mutableListOf<String>()
+        regex.find(scriptContent)?.groupValues?.get(1).let { arrayContent ->
             val values = arrayContent?.split(",")
             if (values != null) {
                 for (value in values) {
@@ -349,10 +348,12 @@ abstract class MangaBox(
     }
 
     override fun pageListParse(document: Document): List<Page> {
-        val content = document.select("script:containsData(cdns =)").joinToString("\n") { it.data() }
-        val cdns =
-            extractArray(content, "cdns") + extractArray(content, "backupImage")
-        val chapterImages = extractArray(content, "chapterImages")
+        val content = document.select("script")
+            .asSequence()
+            .map { it.data() }
+            .firstOrNull { CDN_REGEX.containsMatchIn(it) && CHAPTER_IMG_REGEX.containsMatchIn(it) }
+        val cdns = extractArray(content, CDN_REGEX) + extractArray(content, BACKUP_CDN_REGEX)
+        val chapterImages = extractArray(content, CHAPTER_IMG_REGEX)
 
         // Add all parsed cdns to set
         cdnSet.addAll(cdns)
@@ -499,5 +500,8 @@ abstract class MangaBox(
     companion object {
         private const val PREF_USE_MIRROR = "pref_use_mirror"
         private const val URL_PREFIX = "https://"
+        private val CDN_REGEX = """cdns\s*=\s*\[([^]]+)]""".toRegex()
+        private val BACKUP_CDN_REGEX = """backupImage\s*=\s*\[([^]]+)]""".toRegex()
+        private val CHAPTER_IMG_REGEX = """chapterImages\s*=\s*\[([^]]+)]""".toRegex()
     }
 }
