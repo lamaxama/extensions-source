@@ -189,9 +189,30 @@ def get_all_modules() -> tuple[list[str], list[str]]:
             deleted.append(f"{lang.name}.{extension.name}")
     return modules, deleted
 
+
+def get_single_module(module: str) -> tuple[list[str], list[str]]:
+    match = re.fullmatch(r"(?P<lang>\w+)\.(?P<extension>\w+)", module)
+    if match is None:
+        print(f"Invalid module '{module}'. Expected a value such as en.goda.")
+        sys.exit(1)
+
+    lang = match.group("lang")
+    extension = match.group("extension")
+    if not Path("src", lang, extension, "build.gradle.kts").is_file():
+        print(f"Extension module src/{lang}/{extension} does not exist.")
+        sys.exit(1)
+
+    return [f":src:{lang}:{extension}"], [module]
+
+
 def main() -> None:
     _, ref, build_type = sys.argv
-    modules, deleted = get_module_list(ref)
+    single_module = os.getenv("SINGLE_MODULE", "").strip()
+    modules, deleted = (
+        get_single_module(single_module)
+        if single_module
+        else get_module_list(ref)
+    )
 
     chunked = {
         "chunk": [
