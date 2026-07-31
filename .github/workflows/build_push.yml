@@ -11,8 +11,16 @@ on:
       - '.github/scripts/**'
       - '.github/workflows/build_push.yml'
   workflow_dispatch:
+    inputs:
+      module:
+        description: Extension module to test, for example en.goda. Leave blank for a full build.
+        required: false
+        default: en.goda
+        type: string
 
-permissions: {}
+permissions:
+  actions: read
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}
@@ -21,10 +29,12 @@ concurrency:
 env:
   CI_CHUNK_SIZE: 80
   IS_PR_CHECK: false
+  SINGLE_MODULE: ${{ inputs.module || '' }}
 
 jobs:
   prepare:
     name: Prepare job
+    if: github.event_name == 'workflow_dispatch' || vars.ENABLE_AUTO_PUBLISH == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -73,8 +83,14 @@ jobs:
           cache-read-only: ${{ matrix.chunk.number > 1 }}
 
       - name: Prepare signing key
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
-          echo ${{ secrets.SIGNING_KEY }} | base64 -d > signingkey.jks
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "SIGNING_KEY secret is not configured"
+            exit 1
+          fi
+          printf '%s' "$SIGNING_KEY" | base64 --decode > signingkey.jks
 
       - name: Build extensions (${{ matrix.chunk.number }})
         env:
@@ -83,11 +99,15 @@ jobs:
           KEY_STORE_PASSWORD: ${{ secrets.KEY_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          if [ -z "$ALIAS" ] || [ -z "$KEY_STORE_PASSWORD" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "One or more signing secrets are not configured"
+            exit 1
+          fi
           ./gradlew $MODULES
 
       - name: Upload APKs (${{ matrix.chunk.number }})
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: "github.repository == 'keiyoushi/extensions-source'"
+        if: "github.repository == 'lamaxama/extensions-source'"
         with:
           name: "individual-apks-${{ matrix.chunk.number }}"
           path: |
@@ -98,7 +118,7 @@ jobs:
 
       - name: Clean up CI files
         if: always()
-        run: rm signingkey.jks
+        run: rm -f signingkey.jks
 
   publish:
     name: Publish extension repo
@@ -106,13 +126,16 @@ jobs:
     # Run whenever there's anything to publish, new/changed builds OR only deletions
     if: >-
       always() &&
-      github.repository == 'keiyoushi/extensions-source' &&
+      github.repository == 'lamaxama/extensions-source' &&
       needs.prepare.result == 'success' &&
       needs.build.result != 'failure' &&
       needs.build.result != 'cancelled' &&
       needs.prepare.outputs.delete != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: write
     steps:
       - name: Download APK artifacts
         if: needs.build.result == 'success'
@@ -123,36 +146,49 @@ jobs:
       - name: Checkout main branch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: main
+          ref: ${{ github.sha }}
           path: main
           persist-credentials: false
 
-      - name: Checkout repo branch
+      - name: Checkout repository for publishing
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: keiyoushi/extensions
-          token: ${{ secrets.BOT_PAT }}
-          ref: repo
+          repository: ${{ github.repository }}
+          token: ${{ github.token }}
+          ref: main
           path: repo
+          fetch-depth: 1
           persist-credentials: true
+
+      - name: Prepare repo branch
+        working-directory: repo
+        run: |
+          if git ls-remote --exit-code --heads origin repo > /dev/null 2>&1; then
+            git fetch --depth=1 origin repo
+            git switch --force-create repo FETCH_HEAD
+          else
+            git switch --orphan repo
+            git rm -rf --ignore-unmatch .
+          fi
 
       - name: Publish and deploy repo
         env:
           DELETE: ${{ needs.prepare.outputs.delete }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_BRANCH: main
         run: |
           cd repo
-          pip install protobuf
-          python ../main/.github/scripts/publish-repo.py "$DELETE"
-          git config --global user.email "156378334+keiyoushi-bot@users.noreply.github.com"
-          git config --global user.name "keiyoushi-bot"
+          python -m pip install protobuf
+          python ../main/.github/scripts/publish-repo.py "$DELETE" "$GITHUB_SHA"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
           git status
           if [ -n "$(git status --porcelain)" ]; then
             git add .
             git commit -m "Update extensions repo"
-            git push
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.min.json
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.json
-            curl https://purge.jsdelivr.net/gh/keiyoushi/extensions@repo/index.pb
+            git push origin HEAD:repo
+            curl --fail-with-body --retry 3 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@repo/index.json"
+            curl --fail-with-body --retry 3 "https://purge.jsdelivr.net/gh/${GITHUB_REPOSITORY}@repo/index.pb"
           else
             echo "No changes to commit"
           fi
