@@ -11,9 +11,9 @@
         "name": "Goda",
         "packageName": "eu.kanade.tachiyomi.extension.en.goda",
         "resources": {
-          "apkUrl": "https://cdn.jsdelivr.net/gh/lamaxama/extensions-source@repo/apk/tachiyomi-en.goda-v1.4.3.apk",
+          "apkUrl": "https://github.com/lamaxama/extensions-source/releases/download/2acf970/tachiyomi-en.goda-v1.4.3.apk",
           "iconUrl": "https://cdn.jsdelivr.net/gh/lamaxama/extensions-source@main/lib-multisrc/goda/res/mipmap-xhdpi/ic_launcher.png",
-          "jarUrl": "https://raw.githubusercontent.com/lamaxama/extensions-source/repo/jar/tachiyomi-en.goda-v1.4.3.jar"
+          "jarUrl": "https://github.com/lamaxama/extensions-source/releases/download/2acf970/tachiyomi-en.goda-v1.4.3.jar"
         },
         "extensionLib": "1.4",
         "versionCode": "3",
