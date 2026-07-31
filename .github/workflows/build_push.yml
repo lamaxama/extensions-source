@@ -132,7 +132,7 @@ jobs:
       needs.build.result != 'cancelled' &&
       needs.prepare.outputs.delete != '[]'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 360
     permissions:
       actions: read
       contents: write
