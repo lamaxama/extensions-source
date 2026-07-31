@@ -28,7 +28,8 @@ SOURCE_BRANCH = os.getenv("SOURCE_BRANCH", "main")
 RELEASE_BASE_URL = f"https://github.com/{REPO_NAME}/releases/download"
 ICON_BASE_URL = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{SOURCE_BRANCH}"
 ASSET_LIMIT = 495  # Actual limit is 1000, but we upload two assets per extension.
-UPLOAD_PAUSE_SECONDS = 1
+# Keep content-generating requests below GitHub's documented 500/hour limit.
+UPLOAD_INTERVAL_SECONDS = 7.5
 INITIAL_RATE_LIMIT_WAIT_SECONDS = 60
 MAX_RATE_LIMIT_WAIT_SECONDS = 1800
 MAX_RATE_LIMIT_RETRIES = 6
@@ -280,11 +281,13 @@ def upload_assets(tag: str, files: list[Path]):
     )
 
     for index, file in enumerate(pending_files, start=1):
+        upload_started_at = time.monotonic()
         upload_asset_with_retry(tag, file)
         if index == 1 or index % 25 == 0 or index == len(pending_files):
             print(f"Release {tag}: uploaded {index}/{len(pending_files)} remaining assets")
         if index < len(pending_files):
-            time.sleep(UPLOAD_PAUSE_SECONDS)
+            elapsed = time.monotonic() - upload_started_at
+            time.sleep(max(0, UPLOAD_INTERVAL_SECONDS - elapsed))
 
 
 for tag, batch in release_batches:
