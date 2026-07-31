@@ -13,9 +13,9 @@ on:
   workflow_dispatch:
     inputs:
       module:
-        description: Extension module to test, for example en.goda. Leave blank for a full build.
+        description: Extension module to build, for example en.goda. Leave blank for incremental changes.
         required: false
-        default: en.goda
+        default: ''
         type: string
 
 permissions:
