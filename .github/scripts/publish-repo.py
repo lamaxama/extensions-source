@@ -5,6 +5,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from google.protobuf import json_format
@@ -27,6 +28,10 @@ SOURCE_BRANCH = os.getenv("SOURCE_BRANCH", "main")
 RELEASE_BASE_URL = f"https://github.com/{REPO_NAME}/releases/download"
 ICON_BASE_URL = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{SOURCE_BRANCH}"
 ASSET_LIMIT = 495  # Actual limit is 1000, but we upload two assets per extension.
+UPLOAD_PAUSE_SECONDS = 1
+INITIAL_RATE_LIMIT_WAIT_SECONDS = 60
+MAX_RATE_LIMIT_WAIT_SECONDS = 1800
+MAX_RATE_LIMIT_RETRIES = 6
 
 to_delete: list[str] = json.loads(sys.argv[1])
 current_sha = sys.argv[2]
@@ -205,22 +210,81 @@ def ensure_release(tag: str):
         f"Repository Update {tag}",
         "--notes",
         f"Automated update from {REPO_NAME}@{current_sha}",
+        "--target",
+        current_sha,
     )
+
+
+def get_existing_asset_names(tag: str) -> set[str]:
+    release_id = run_gh(
+        "api",
+        f"repos/{REPO_NAME}/releases/tags/{tag}",
+        "--jq",
+        ".id",
+    )
+    output = run_gh(
+        "api",
+        "--paginate",
+        f"repos/{REPO_NAME}/releases/{release_id}/assets?per_page=100",
+        "--jq",
+        ".[].name",
+    )
+    return set(output.splitlines())
+
+
+def upload_asset_with_retry(tag: str, file: Path):
+    for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+        result = subprocess.run(
+            ["gh", "release", "upload", tag, str(file), "--repo", REPO_NAME],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return
+
+        error = f"{result.stdout}\n{result.stderr}".strip()
+        error_lower = error.lower()
+        if "already_exists" in error_lower or "already exists" in error_lower:
+            if file.name in get_existing_asset_names(tag):
+                return
+
+        is_rate_limited = (
+            "secondary rate limit" in error_lower
+            or "rate limit" in error_lower
+            or "http 429" in error_lower
+        )
+        if not is_rate_limited or attempt == MAX_RATE_LIMIT_RETRIES:
+            print(f"Failed to upload {file.name}: {error}")
+            sys.exit(result.returncode)
+
+        wait_seconds = min(
+            INITIAL_RATE_LIMIT_WAIT_SECONDS * (2 ** attempt),
+            MAX_RATE_LIMIT_WAIT_SECONDS,
+        )
+        print(
+            f"Rate limited while uploading {file.name}; "
+            f"waiting {wait_seconds} seconds before retrying"
+        )
+        time.sleep(wait_seconds)
 
 
 def upload_assets(tag: str, files: list[Path]):
     if not files:
         return
-    print(f"Uploading {len(files)} assets to {tag}")
-    run_gh(
-        "release",
-        "upload",
-        tag,
-        *[str(f) for f in files],
-        "--repo",
-        REPO_NAME,
-        "--clobber",
+
+    existing_assets = get_existing_asset_names(tag)
+    pending_files = [file for file in files if file.name not in existing_assets]
+    print(
+        f"Release {tag}: {len(existing_assets)} assets already uploaded, "
+        f"{len(pending_files)} remaining"
     )
+
+    for index, file in enumerate(pending_files, start=1):
+        upload_asset_with_retry(tag, file)
+        if index == 1 or index % 25 == 0 or index == len(pending_files):
+            print(f"Release {tag}: uploaded {index}/{len(pending_files)} remaining assets")
+        if index < len(pending_files):
+            time.sleep(UPLOAD_PAUSE_SECONDS)
 
 
 for tag, batch in release_batches:
