@@ -24,9 +24,9 @@ REPO_JAR_DIR.mkdir(parents=True, exist_ok=True)
 
 REPO_NAME = os.getenv("GITHUB_REPOSITORY", "lamaxama/extensions-source")
 SOURCE_BRANCH = os.getenv("SOURCE_BRANCH", "main")
-APK_BASE_URL = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@repo/apk"
-JAR_BASE_URL = f"https://raw.githubusercontent.com/{REPO_NAME}/repo/jar"
+RELEASE_BASE_URL = f"https://github.com/{REPO_NAME}/releases/download"
 ICON_BASE_URL = f"https://cdn.jsdelivr.net/gh/{REPO_NAME}@{SOURCE_BRANCH}"
+ASSET_LIMIT = 495  # Actual limit is 1000, but we upload two assets per extension.
 
 to_delete: list[str] = json.loads(sys.argv[1])
 current_sha = sys.argv[2]
@@ -78,15 +78,10 @@ for info_file in ARTIFACTS_DIR.glob("**/keiyoushi-source-info.json"):
             f"{package_name}: no release jar found under {info_file.parent}"
         )
 
-    (REPO_APK_DIR / apk.name).write_bytes(apk.read_bytes())
-    (REPO_JAR_DIR / jar.name).write_bytes(jar.read_bytes())
-
     ext = index_pb2.Extension(
         name=info["name"],
         packageName=package_name,
         resources=index_pb2.Resources(
-            apkUrl=f"{APK_BASE_URL}/{apk.name}",
-            jarUrl=f"{JAR_BASE_URL}/{jar.name}",
             iconUrl=get_icon_url(info["module"], info.get("theme")),
         ),
         extensionLib=info["extensionLib"],
@@ -105,6 +100,28 @@ for info_file in ARTIFACTS_DIR.glob("**/keiyoushi-source-info.json"):
         ],
     )
     new_extensions.append((ext, apk, jar))
+
+# Assign each extension to a release before writing the index so clients download the assets
+# from GitHub Releases instead of the repo branch.
+release_batches: list[
+    tuple[str, list[tuple[index_pb2.Extension, Path, Path]]]
+] = []
+if new_extensions:
+    release_count = math.ceil(len(new_extensions) / ASSET_LIMIT)
+    ext_per_release = math.ceil(len(new_extensions) / release_count)
+
+    for i in range(0, len(new_extensions), ext_per_release):
+        batch = new_extensions[i:i + ext_per_release]
+        batch_index = i // ext_per_release
+        tag = (
+            f"{current_sha_short}-{batch_index}"
+            if release_count > 1
+            else current_sha_short
+        )
+        for ext, apk, jar in batch:
+            ext.resources.apkUrl = f"{RELEASE_BASE_URL}/{tag}/{apk.name}"
+            ext.resources.jarUrl = f"{RELEASE_BASE_URL}/{tag}/{jar.name}"
+        release_batches.append((tag, batch))
 
 # Merge with the already-published index, dropping the deleted/rebuilt modules.
 index_path = REPO_DIR / "index.json"
@@ -155,14 +172,8 @@ with REPO_DIR.joinpath("index.html").open("w", encoding="utf-8") as f:
     f.write("</pre>\n</body>\n</html>\n")
 
 # --- Upload assets as release ---
-if not new_extensions:
+if not release_batches:
     sys.exit(0)
-
-ASSET_LIMIT = 495  # Actual limit is 1000, but we upload two assets per extension.
-total_extensions = len(new_extensions)
-release_count = math.ceil(total_extensions / ASSET_LIMIT)
-ext_per_release = math.ceil(total_extensions / release_count)
-
 
 def run_gh(*args: str) -> str:
     result = subprocess.run(["gh", *args], capture_output=True, text=True)
@@ -212,13 +223,7 @@ def upload_assets(tag: str, files: list[Path]):
     )
 
 
-def get_release_tag(c_index: int) -> str:
-    return f"{current_sha_short}-{c_index}" if release_count > 1 else current_sha_short
-
-
-for i in range(0, total_extensions, ext_per_release):
-    batch = new_extensions[i:i + ext_per_release]
-    tag = get_release_tag(i // ext_per_release)
+for tag, batch in release_batches:
     ensure_release(tag)
 
     files_to_upload = []
